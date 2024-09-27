@@ -27,11 +27,11 @@ np.set_printoptions(suppress=True)
 #-----------------------------------------------------------#
 
 # have to use a little bit bigger value than wireExternalDiameter, if not, the wire will not fit inside
-AllCoilsWireDiameter = (0.56 + 0.047)*1.09   # Wire diameter in mm (from dataSheet)
+AllCoilsWireDiameter = (0.511 + 0.047)*1.09   # Wire diameter in mm (from dataSheet)
 
-minRes = 0.06736                            # Ohms/m (from dataSheet)
-nominal = 0.06940                           # Ohms/m (from dataSheet)
-maxRes = 0.07153                            # Ohms/m (from dataSheet)
+minRes = 84.2E3                            # Ohms/m (from dataSheet)
+nominal = 84.2E3                           # Ohms/m (from dataSheet)
+maxRes = 84.2E3                            # Ohms/m (from dataSheet)
 
 wireResistence = maxRes                     # Ohms/m (from dataSheet)
 
