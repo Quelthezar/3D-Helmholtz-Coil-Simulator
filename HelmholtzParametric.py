@@ -9,7 +9,7 @@ class Coil:
     Attributes
     ----------
     coil_width : float
-        Width of the coil in meters.
+        Width of the coil cross-section in meters. (SQUARE)
     magnetFieldH : float
         Magnetic field strength in A/m.
     currentDensity : float
@@ -39,9 +39,8 @@ class Coil:
     def __init__(
         self,
         coil_width: float,
-        magnetFieldH: float,
-        currentDensity: float,
         constants: Dict[str, float],
+        constraints: Dict[str, float],
     ):
         """
         Initialize the Coil object.
@@ -49,24 +48,31 @@ class Coil:
         Parameters
         ----------
         coil_width : float
-            Width of the coil in meters.
-        magnetFieldH : float
-            Magnetic field strength in A/m.
-        currentDensity : float
-            Current density in A/m^2.
+            Width of the coil cross-section in meters. (SQUARE)
         constants : dict
             Dictionary of physical constants used in calculations.
+        constraints : dict
+            Dictionary of constraints for the coil geometry.
         """
         self.coil_width = coil_width
-        self.magnetFieldH = magnetFieldH
-        self.currentDensity = currentDensity
+        self.magnetFieldH = constraints["desiredMagneticFieldB"] / constants["permeabilityFreeSpace"]
+        self.currentDensity = constraints["currentDensity"]
         self.constants = constants
+        self.constraints = constraints
 
         # Geometry and electrical properties
+        self.deltai = constants["deltai"]
+        self.deltao = constants["deltao"]
+        self.spool_innerWallThickness = constants["spool_innerWallThickness"]
+        self.spool_sideWallThickness = constants["spool_sideWallThickness"]
+        self.eta = constants["eta"]
+
         self.diameter: Optional[float] = None
         self.diameter_inner: Optional[float] = None
         self.diameter_outer: Optional[float] = None
         self.gap: Optional[float] = None
+        self.packing_efficiency: Optional[float] = None
+        self.xi: Optional[float] = None
         self.psi: Optional[float] = None
         self.lambda_c: Optional[float] = None
         self.resistance_coil: Optional[float] = None
@@ -78,51 +84,64 @@ class Coil:
         """
         Calculate the geometric properties of the coil (diameter, inner diameter, outer diameter, and gap).
         """
-        packing_efficiency = (np.pi * self.constants["deltai"] ** 2) / (
-            4 * self.constants["deltao"] ** 2
+        self.packing_efficiency = (np.pi * self.deltai ** 2) / (
+            4 * self.deltao ** 2
         )
 
-        xi = (1.43 * self.currentDensity * packing_efficiency) / self.magnetFieldH
-        if self.coil_width <= self.constants["deltao"]:
+        self.xi = (
+            1.43 * self.currentDensity * self.packing_efficiency
+        ) / self.magnetFieldH
+
+        if self.coil_width <= self.deltao:
             raise ValueError("Invalid coil width")
 
-        self.diameter = xi * (self.coil_width - self.constants["deltao"]) ** 2
+        self.diameter = self.xi * (self.coil_width - self.deltao) ** 2
         self.diameter_inner = (
             self.diameter
             - self.coil_width
-            - 2 * self.constants["spool_innerWallThickness"]
+            - 2 * self.spool_innerWallThickness
         )
         self.diameter_outer = self.diameter + self.coil_width
         self.gap = (
             0.5 * self.diameter
             - self.coil_width
-            - 2 * self.constants["spool_sideWallThickness"]
+            - 2 * self.spool_sideWallThickness
         )
 
     def calculate_electrical_properties(self) -> None:
         """
         Calculate the electrical properties of the coil (wire length, resistance, voltage, and power).
         """
-        self.psi = (np.pi / 4) * (self.coil_width - self.constants["deltao"]) * (
+        # Effective volume of wire in a single coil
+        self.psi = (np.pi / 4) * (self.coil_width - self.deltao) * (
             self.diameter_inner
-            + 2 * self.constants["spool_innerWallThickness"]
+            + 2 * self.spool_innerWallThickness
             + 2
-            * self.constants["deltao"]
-            * np.floor(self.coil_width / self.constants["deltao"])
-        ) ** 2 - (np.pi / 4) * (self.coil_width - self.constants["deltao"]) * (
-            self.diameter_inner + 2 * self.constants["spool_innerWallThickness"]
+            * self.deltao
+            * np.floor(self.coil_width / self.deltao)
+        ) ** 2 - (np.pi / 4) * (self.coil_width - self.deltao) * (
+            self.diameter_inner + 2 * self.spool_innerWallThickness
         ) ** 2
-        print("psi", self.psi)
+        print("psi = ", self.psi)
 
-        self.lambda_c = 2 * self.psi / self.constants["deltao"] ** 2
-        print("lambda_c", self.lambda_c)
-        self.resistance_coil = self.constants["eta"] * self.lambda_c
+        # Total length of wire in a Helmholtz pair
+        self.lambda_c = 2 * self.psi / (self.deltao ** 2)
+        print("lambda_c = ", self.lambda_c)
 
+        # Resistance per unit length of wire
+        self.resistance_coil = self.eta * self.lambda_c
+
+        # Current required for the coil (based on chosen current density)
         self.current_coil = (
-            np.pi * self.constants["deltai"] ** 2 / 4
+            np.pi * self.deltai ** 2 / 4
         ) * self.currentDensity
+        print("current_coil = ", self.current_coil)
+
         self.voltage_coil = self.current_coil * self.resistance_coil
+        print("voltage_coil = ", self.voltage_coil)
+
         self.power_coil = self.current_coil**2 * self.resistance_coil
+        print("power_coil = ", self.power_coil)
 
     def calculate_next_larger_coil(self) -> "Coil":
         """
@@ -133,50 +152,45 @@ class Coil:
         Coil
             A new Coil object representing the next larger coil.
         """
-        # Calculate xi for current setup
-        packing_efficiency = (np.pi * self.constants["deltai"] ** 2) / (
-            4 * self.constants["deltao"] ** 2
-        )
-        xi = (1.43 * self.currentDensity * packing_efficiency) / self.magnetFieldH
 
-        # Quartic coefficients based on the current coil's dimensions
-        a4 = 1.25 * xi**2
-        a3 = -5 * xi**2 * self.constants["deltao"] - 3 * xi
+        # Quartic coefficients based on the current coil's dimensions (from appendix B)
+        a4 = 1.25 * self.xi**2
+        a3 = -5 * self.xi**2 * self.deltao - 3 * self.xi
         a2 = (
-            7.5 * xi**2 * self.constants["deltao"] ** 2
-            + 6 * xi * self.constants["deltao"]
-            - 2 * self.constants["spool_sideWallThickness"] * xi
-            - 4 * self.constants["spool_innerWallThickness"] * xi
+            7.5 * self.xi**2 * self.deltao ** 2
+            + 6 * self.xi * self.deltao
+            - 2 * self.spool_sideWallThickness * self.xi
+            - 4 * self.spool_innerWallThickness * self.xi
             + 2
         )
         a1 = (
-            -5 * xi**2 * self.constants["deltao"] ** 3
-            - 3 * xi * self.constants["deltao"] ** 2
+            -5 * self.xi**2 * self.deltao ** 3
+            - 3 * self.xi * self.deltao ** 2
             + 4
             * (
-                self.constants["spool_sideWallThickness"]
-                + 2 * self.constants["spool_innerWallThickness"]
+                self.spool_sideWallThickness
+                + 2 * self.spool_innerWallThickness
             )
-            * (xi * self.constants["deltao"] + 1)
+            * (self.xi * self.deltao + 1)
         )
         a0 = (
-            1.25 * xi**2 * self.constants["deltao"] ** 4
+            1.25 * self.xi**2 * self.deltao ** 4
             - 2
             * (
-                self.constants["spool_sideWallThickness"]
-                + 2 * self.constants["spool_innerWallThickness"]
+                self.spool_sideWallThickness
+                + 2 * self.spool_innerWallThickness
             )
-            * xi
-            * self.constants["deltao"] ** 2
+            * self.xi
+            * self.deltao ** 2
             + 4
             * (
-                self.constants["spool_innerWallThickness"] ** 2
-                + self.constants["spool_sideWallThickness"] ** 2
+                self.spool_innerWallThickness ** 2
+                + self.spool_sideWallThickness ** 2
             )
             - (
                 self.gap
                 + 2 * self.coil_width
-                + 4 * self.constants["spool_sideWallThickness"]
+                + 4 * self.spool_sideWallThickness
             )
             ** 2
             - self.diameter_outer**2
@@ -202,13 +216,13 @@ class Coil:
         # Create the next larger coil based on this width
         next_coil = Coil(
             coil_width=next_coil_width,
-            magnetFieldH=self.magnetFieldH,
-            currentDensity=self.currentDensity,
             constants=self.constants,
+            constraints=self.constraints,
         )
 
         # Calculate geometry for the next coil
         next_coil.calculate_geometry()
+        next_coil.calculate_electrical_properties()
 
         return next_coil
 
@@ -225,7 +239,7 @@ class Coil:
 
         # Display coil name if provided
         if coil_name:
-            print(f"--- {coil_name} Results ---")
+            print(f"\n--- {coil_name} Results ---")
 
         print(f"Coil Width: {self.coil_width} m or {self.coil_width * 1000} mm")
         print(
@@ -243,9 +257,8 @@ class Coil:
 
 
 def find_smallest_coil_width(
-    magnetFieldH: float,
-    currentDensity: float,
     constants: Dict[str, float],
+    constraints: Dict[str, float],
     tolerance: float = 1e-6,
 ) -> Optional[float]:
     """
@@ -253,12 +266,10 @@ def find_smallest_coil_width(
 
     Parameters
     ----------
-    magnetFieldH : float
-        Magnetic field strength in A/m.
-    currentDensity : float
-        Current density in A/m^2.
     constants : dict
         Dictionary containing relevant constants such as 'deltao', 'spool_innerWallThickness', etc.
+    constraints : dict
+        Dictionary containing constraints for the coil geometry.
     tolerance : float, optional
         Tolerance for floating-point comparisons, by default 1e-6.
 
@@ -267,6 +278,13 @@ def find_smallest_coil_width(
     Optional[float]
         The smallest coil width (in meters) that satisfies the constraints, or None if no valid width is found.
     """
+    # Extract constraints
+    magnetFieldH = constraints["desiredMagneticFieldB"] / constants["permeabilityFreeSpace"]
+    currentDensity = constraints["currentDensity"]
+
+    gap_1_min = constraints["gap_1_min"]
+    coil_inner_diameter_min = constraints["diameter_inner_1_min"]
+
     # Define the range of possible coil widths to search through
     coilWidth_1_range = np.linspace(0.0001, 0.1, 1000000)
 
@@ -292,7 +310,7 @@ def find_smallest_coil_width(
         gap_1 = 0.5 * diameter_1 - coil_width - 2 * constants["spool_sideWallThickness"]
 
         # Check the constraints: gap must be larger than 0.02 m and the inner diameter must satisfy the tolerance
-        if gap_1 > 0.02 and diameter_inner_1 > 40 * 10**-3 - tolerance:
+        if gap_1 > gap_1_min and diameter_inner_1 > coil_inner_diameter_min - tolerance:
             # Return the first valid coil width that satisfies the constraints
             return coil_width
 
@@ -301,7 +319,7 @@ def find_smallest_coil_width(
 
 
 # Define constants for Helmholtz coils
-constants = {
+constants: Dict[str, float] = {
     "deltai": 0.511 * 10**-3,  # m (minimum diameter)
     "deltao": 0.512 * 10**-3,  # m (maximum diameter)
     "spool_innerWallThickness": 2.5 * 10**-3,  # m
@@ -309,32 +327,27 @@ constants = {
     "mu_naught": 4 * np.pi * 10**-7,  # Permeability of free space
     "maxCurrent": 1.25,  # amps
     "eta": 86 / 1000,  # ohms per meter
+    "permeabilityFreeSpace": 4 * np.pi * 10**-7,  # Tm/A
+}
+
+constraints: Dict[str, float] = {
+    "desiredMagneticFieldB": 10e-3,  # T
+    "currentDensity": 6e6,  # A/m^2
+    "gap_1_min": 20e-3,  # m
+    "gap_2_min": 20e-3,  # m
+    "gap_3_min": 20e-3,  # m
+    "diameter_inner_1_min": 40e-3,  # m
+    "diameter_outer_2_max": 70e-3,  # m
+    "chordLength_3_max": 0.105,  # m
 }
 
 # Example usage for finding the smallest coil width
-desiredMagneticFieldB = 10E-3  # T
-permeabiltyFreeSpace = 4 * np.pi * 10**-7  # Tm/A
-magnetFieldH = desiredMagneticFieldB/permeabiltyFreeSpace  # A/m
-currentDensity = 6E6  # A/m^2
-
-# Constraints for coils
-gap_1_min = 20E-3  # m
-gap_2_min = 20E-3  # m
-gap_3_min = 20E-3  # m
-
-diameter_inner_1_min = 40E-3  # m
-diameter_outer_2_max = 70E-3  # m
-
-chordLength_3_max = 0.105  # m
-
 # Print chosen constants
-print(f"\nChosen maximum magnetic field strength: {desiredMagneticFieldB*1000} mT")
-print(f"Chosen current density: {currentDensity} A/m^2\n")
+print("\nChosen maximum magnetic field strength: ", constraints["desiredMagneticFieldB"] * 1000, " mT")
+print(f"Chosen current density: ", constraints["currentDensity"], " A/m^2\n")
 
 # Find the smallest coil width for coil 1
-smallest_coil_width: float = find_smallest_coil_width(
-    magnetFieldH, currentDensity, constants
-)
+smallest_coil_width = find_smallest_coil_width(constants, constraints)
 
 if smallest_coil_width:
     print(f"Calculated smallest coil width: {smallest_coil_width * 1000:.2f} mm\n")
@@ -342,9 +355,8 @@ if smallest_coil_width:
     # Create Coil 1
     coil_1 = Coil(
         coil_width=smallest_coil_width,
-        magnetFieldH=79580,
-        currentDensity=2.5 * 10**6,
         constants=constants,
+        constraints=constraints,
     )
 
     # Calculate geometry for Coil 1
@@ -360,5 +372,27 @@ if smallest_coil_width:
     coil_1.display_results(coil_name="Coil 1")
     coil_2.display_results(coil_name="Coil 2")
     coil_3.display_results(coil_name="Coil 3")
+
+    # Shorter summary at end, including each coil's coil width, diameter, and gap
+    print("\n--- Summary ---")
+    print(f"Diameter of wire: {constants['deltai'] * 1000:.2f} mm")
+    print(f"Target Magnetic Field Strength: {constraints['desiredMagneticFieldB'] * 1000:.2f} mT")
+    print(f"Current Density: {constraints['currentDensity']} A/m^2")
+    print(f"\nCoil 1: Width = {coil_1.coil_width * 1000:.2f} mm, Diameter = {coil_1.diameter * 1000:.2f} mm, Gap = {coil_1.gap * 1000:.2f} mm")
+    print(f"Coil 2: Width = {coil_2.coil_width* 1000:.2f} mm, Diameter = {coil_2.diameter * 1000:.2f} mm, Gap = {coil_2.gap * 1000:.2f} mm")
+    print(f"Coil 3: Width = {coil_3.coil_width * 1000:.2f} mm, Diameter = {coil_3.diameter * 1000:.2f} mm, Gap = {coil_3.gap * 1000:.2f} mm")
+
+    # Calculate the total power consumed by the three coils
+    total_power = coil_1.power_coil + coil_2.power_coil + coil_3.power_coil
+    print(f"\nTotal power consumed by all coils: {total_power:.2f} W")
+
+    # Print the current through each of the three coils
+    print(f"Current through Coil 1: {coil_1.current_coil:.2f} A")
+    print(f"Current through Coil 2: {coil_2.current_coil:.2f} A")
+    print(f"Current through Coil 3: {coil_3.current_coil:.2f} A")
+
+    # Calculate the total length of wire used in the three coils
+    total_wire_length = coil_1.lambda_c + coil_2.lambda_c + coil_3.lambda_c
+    print(f"Total length of wire used in all coils: {total_wire_length:.2f} m")
 else:
     print("No suitable coil width found in the given range.")
